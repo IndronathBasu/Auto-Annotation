@@ -125,22 +125,51 @@ class YOLOEngine:
         trainer.add_callback("on_fit_epoch_end", on_fit_epoch_end)
         
         import torch
+
         device = 0 if torch.cuda.is_available() else "cpu"
+
         res = trainer.train(
-            data=yaml_path, epochs=epochs, imgsz=640, batch=8,
-            patience=25, verbose=False, device=device,
-            hsv_h=0.015, hsv_s=0.7, hsv_v=0.4,
-            degrees=15, translate=0.2, scale=0.5,
-            fliplr=0.5, mosaic=1.0, mixup=0.2, multi_scale=False,
+            data=yaml_path,
+
+            # Training
+            epochs=epochs,
+            imgsz=1280,          # Better for small objects
+            batch=4,
+
+            # Early stopping
+            patience=50,
+
+            # Hardware
+            device=device,
+            workers=8,
+            cache=True,
+
+            # Augmentation
+            hsv_h=0.015,
+            hsv_s=0.7,
+            hsv_v=0.4,
+
+            degrees=10,
+            translate=0.10,
+            scale=0.30,
+
+            fliplr=0.5,
+            flipud=0.0,
+
+            mosaic=1.0,
+            mixup=0.10,
+
+            # Multi-scale training
+            multi_scale=False,
+
+            # Training options
+            amp=True,
+            verbose=False,
+
             project=str(Path(yaml_path).parent / "runs"),
-            name="run", exist_ok=True,
-            workers=4)
-        best = Path(res.save_dir) / "weights" / "best.pt"
-        if not best.exists():
-            raise RuntimeError("best.pt not found after training")
-        self.custom = YOLO(str(best))
-        if cb: cb(f"✅ Done → {best.name}", 1.0)
-        return str(best)
+            name="run",
+            exist_ok=True
+        )
 
 YOLO = YOLOEngine()
 
@@ -188,7 +217,12 @@ class IconList(ctk.CTkScrollableFrame):
         
         # Create a solid placeholder
         img = Image.new("RGB", (68, 48), "#1F2937")
-        self.default_img = ImageTk.PhotoImage(img)
+
+        self.default_img = ctk.CTkImage(
+            light_image=img,
+            dark_image=img,
+            size=(68, 48)
+        )
         self.grid_columnconfigure((0, 1, 2), weight=1, uniform="col")
 
     def clear(self):
@@ -262,10 +296,16 @@ class IconList(ctk.CTkScrollableFrame):
     def _update_thumbnail(self, idx, pil_img, load_id):
         if load_id != self.load_id or idx >= len(self.cards):
             return
-        photo = ImageTk.PhotoImage(pil_img)
-        self.cards[idx]["photo"] = photo
-        self.cards[idx]["img_lbl"].configure(image=photo)
+        photo = ctk.CTkImage(
+            light_image=pil_img,
+            dark_image=pil_img,
+            size=pil_img.size
+        )
 
+        self.cards[idx]["photo"] = photo
+        self.cards[idx]["img_lbl"].configure(
+            image=photo
+        )
     def _on_card_click(self, idx, event):
         is_ctrl = (event.state & 0x0004) or (event.state & 0x0080)
         is_shift = (event.state & 0x0001)
@@ -1442,9 +1482,18 @@ class App(ctk.CTk):
             for i,path in enumerate(pending):
                 bgr=cv2.imread(str(path))
                 if bgr is None: continue
-                opt_conf = getattr(self, "_optimal_conf", max(0.45, self.conf_v.get()))
-                anns=YOLO.predict(bgr,conf=opt_conf,
-                                  seg=False,use_custom=True)
+                opt_conf = max(
+                    getattr(self, "_optimal_conf", 0.60),
+                    0.60
+                )
+
+                anns = YOLO.predict(
+                    bgr,
+                    conf=opt_conf,
+                    iou=0.50,
+                    seg=False,
+                    use_custom=True
+                )
                 self.all_anns[str(path)]=anns
                 self.after(0,lambda p=(i+1)/total,nm=path.name,idx=i:(
                     self.prog.set(p),
@@ -2347,7 +2396,10 @@ class App(ctk.CTk):
 
                     # Build label — empty string if no manual annotations
                     anns = self.all_anns.get(str(src), [])
-                    manual_anns = [a for a in anns if a.manual]
+                    manual_anns = [
+                        a for a in anns
+                        if a.manual or a.confidence >= 0.80
+                     ]
                     lines = []
                     if manual_anns:
                         bgr = cv2.imread(str(src))
